@@ -1,8 +1,9 @@
 // POST /.netlify/functions/send-mail
-// Validates input, sends an email via the Resend HTTP API, and records
-// the attempt (success or failure) in the Supabase `emails` table.
+// Authenticates the caller, validates input, sends an email via the Resend
+// HTTP API, and records the attempt (success or failure) in the `messages`
+// table as a row in the sender's "sent" folder.
 
-const { getSupabase } = require('./_supabase');
+const { getAdminClient, getUserFromToken } = require('./_supabase');
 
 // Standard JSON response headers.
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -35,6 +36,13 @@ exports.handler = async (event) => {
       return jsonResponse(405, { ok: false, error: 'Method Not Allowed' });
     }
 
+    // Authenticate the caller via the Authorization header.
+    const authHeader = event.headers.authorization || event.headers.Authorization;
+    const user = await getUserFromToken(authHeader);
+    if (!user) {
+      return jsonResponse(401, { ok: false, error: 'Unauthorized' });
+    }
+
     // Parse the JSON body defensively.
     let payload;
     try {
@@ -54,16 +62,14 @@ exports.handler = async (event) => {
     }
 
     // Validate that `to` looks like an email address.
-    if (!EMAIL_REGEX.test(to.trim())) {
+    const toEmail = to.trim();
+    if (!EMAIL_REGEX.test(toEmail)) {
       return jsonResponse(400, { ok: false, error: 'Field "to" must be a valid email address.' });
     }
 
-    const toEmail = to.trim();
-    const supabase = getSupabase();
-
     // Attempt to send the email via the Resend HTTP API.
     let sendOk = false;
-    let sendError = null;
+    let detail = null;
 
     try {
       const resendResponse = await fetch('https://api.resend.com/emails', {
@@ -85,34 +91,39 @@ exports.handler = async (event) => {
       } else {
         // Capture Resend's error detail for logging/storage.
         const errText = await resendResponse.text();
-        sendError = `Resend API error (${resendResponse.status}): ${errText}`;
+        detail = `Resend API error (${resendResponse.status}): ${errText}`;
       }
     } catch (err) {
-      sendError = `Failed to reach Resend API: ${err.message}`;
+      detail = `Failed to reach Resend API: ${err && err.message}`;
     }
 
-    // Record the attempt in Supabase regardless of outcome.
-    const { data: inserted, error: dbError } = await supabase
-      .from('emails')
+    // Record the attempt in `messages` regardless of outcome (sent folder).
+    const admin = getAdminClient();
+    const { data: inserted, error: dbError } = await admin
+      .from('messages')
       .insert({
+        user_id: user.id,
+        folder: 'sent',
+        from_email: user.email,
         to_email: toEmail,
         subject,
         body,
         status: sendOk ? 'sent' : 'failed',
-        error: sendOk ? null : sendError,
+        error: sendOk ? null : detail,
+        read: true,
       })
       .select('id')
       .single();
 
     if (dbError) {
       // The DB insert failed; log details server-side (never leak to client).
-      console.error('Failed to insert email record into Supabase:', dbError);
+      console.error('Failed to insert message record into Supabase:', dbError);
     }
 
-    // If sending failed, surface a 502 (but the failure was still logged above).
+    // If sending failed, surface a 502 (the failure was still logged above).
     if (!sendOk) {
-      console.error('Email send failed:', sendError);
-      return jsonResponse(502, { ok: false, error: sendError || 'Failed to send email.' });
+      console.error('Email send failed:', detail);
+      return jsonResponse(502, { ok: false, error: detail || 'Failed to send email.' });
     }
 
     return jsonResponse(200, { ok: true, id: inserted ? inserted.id : null });

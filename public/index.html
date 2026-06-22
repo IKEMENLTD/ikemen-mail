@@ -5,43 +5,126 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ikemen Mail</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✉️</text></svg>" />
 </head>
 <body>
-  <main class="card">
-    <header class="header">
-      <h1 class="title">Ikemen Mail</h1>
-      <p class="subtitle">シンプルなメール送信ツール</p>
-    </header>
+  <!-- ============ AUTH VIEW ============ -->
+  <div id="auth-view" class="auth-view hidden">
+    <div class="auth-card">
+      <div class="auth-logo">✉️ Ikemen Mail</div>
+      <p class="auth-sub" id="auth-sub">アカウントにログイン</p>
 
-    <section class="compose">
-      <form id="compose-form" novalidate>
-        <div class="field">
-          <label for="to">宛先</label>
-          <input type="email" id="to" name="to" required placeholder="example@example.com" />
-        </div>
+      <form id="auth-form" autocomplete="on">
+        <label class="field">
+          <span>メールアドレス</span>
+          <input type="email" id="auth-email" required autocomplete="email" placeholder="you@example.com" />
+        </label>
+        <label class="field">
+          <span>パスワード</span>
+          <input type="password" id="auth-password" required autocomplete="current-password" placeholder="••••••••" minlength="6" />
+        </label>
 
-        <div class="field">
-          <label for="subject">件名</label>
-          <input type="text" id="subject" name="subject" required placeholder="件名を入力" />
-        </div>
+        <div id="auth-message" class="auth-message" role="alert"></div>
 
-        <div class="field">
-          <label for="body">本文</label>
-          <textarea id="body" name="body" rows="6" required placeholder="本文を入力"></textarea>
-        </div>
-
-        <button type="submit" id="send-btn" class="btn">送信</button>
-
-        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <button type="submit" id="auth-submit" class="btn btn-primary btn-block">ログイン</button>
       </form>
+
+      <div class="auth-toggle">
+        <span id="auth-toggle-text">アカウントをお持ちでない方は</span>
+        <a href="#" id="auth-toggle-link">新規登録</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ APP VIEW ============ -->
+  <div id="app-view" class="app-view hidden">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="app-title">✉️ Ikemen Mail</div>
+        <button class="btn btn-primary btn-compose" id="compose-btn">✏️ 新規作成</button>
+        <nav class="nav">
+          <button class="nav-item" data-folder="inbox">
+            <span class="nav-label">📥 受信箱</span>
+            <span class="badge hidden" id="unread-badge">0</span>
+          </button>
+          <button class="nav-item" data-folder="sent">
+            <span class="nav-label">📤 送信済</span>
+          </button>
+          <button class="nav-item" data-folder="drafts">
+            <span class="nav-label">📝 下書き</span>
+          </button>
+        </nav>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="user-email" id="user-email" title=""></div>
+        <button class="btn btn-ghost btn-block" id="logout-btn">ログアウト</button>
+      </div>
+    </aside>
+
+    <!-- Backdrop for mobile sidebar -->
+    <div class="sidebar-backdrop hidden" id="sidebar-backdrop"></div>
+
+    <!-- Message list -->
+    <section class="list-pane" id="list-pane">
+      <header class="pane-header">
+        <button class="icon-btn" id="sidebar-toggle" title="メニュー">☰</button>
+        <h2 id="list-title">受信箱</h2>
+        <button class="icon-btn" id="refresh-btn" title="更新">⟳</button>
+      </header>
+      <div class="message-list" id="message-list"></div>
     </section>
 
-    <section class="history">
-      <h2 class="section-title">送信履歴</h2>
-      <ul id="history-list" class="history-list"></ul>
+    <!-- Reading pane -->
+    <section class="detail-pane" id="detail-pane">
+      <header class="pane-header">
+        <button class="icon-btn detail-back hidden" id="detail-back" title="戻る">←</button>
+        <h2 id="detail-title">メッセージ</h2>
+        <button class="icon-btn danger hidden" id="delete-btn" title="削除">🗑 削除</button>
+      </header>
+      <div class="detail-body" id="detail-body">
+        <div class="empty-state">メッセージを選択してください</div>
+      </div>
     </section>
-  </main>
+  </div>
 
-  <script src="app.js"></script>
+  <!-- ============ COMPOSE MODAL ============ -->
+  <div id="compose-overlay" class="overlay hidden">
+    <div class="compose-modal">
+      <header class="compose-header">
+        <h3 id="compose-title">新規メッセージ</h3>
+        <button class="icon-btn" id="compose-close" title="閉じる">✕</button>
+      </header>
+      <form id="compose-form" class="compose-form">
+        <input type="hidden" id="compose-draft-id" />
+        <label class="field">
+          <span>宛先</span>
+          <input type="email" id="compose-to" required placeholder="recipient@example.com" />
+        </label>
+        <label class="field">
+          <span>件名</span>
+          <input type="text" id="compose-subject" placeholder="件名" />
+        </label>
+        <label class="field field-grow">
+          <span>本文</span>
+          <textarea id="compose-body" placeholder="本文を入力..."></textarea>
+        </label>
+        <div id="compose-message" class="auth-message"></div>
+        <div class="compose-actions">
+          <button type="button" class="btn btn-secondary" id="save-draft-btn">下書き保存</button>
+          <button type="submit" class="btn btn-primary" id="send-btn">送信</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Loading splash -->
+  <div id="splash" class="splash"><div class="spinner"></div></div>
+
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
