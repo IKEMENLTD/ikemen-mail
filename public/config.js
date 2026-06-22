@@ -1,4 +1,4 @@
-// PUBLIC client configuration for Ikemen Mail.
+// PUBLIC client configuration for Standard Mailer.
 // These values are safe to expose in the browser: the anonKey is the
 // PUBLIC Supabase anon key and all data access is protected by RLS.
 window.SUPABASE_CONFIG = {

@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /* =========================================================================
-   Ikemen Mail — frontend
+   Standard Mailer — frontend
    - Supabase Auth (email/password)
    - Folders: inbox / sent / drafts (client-side via supabase-js, RLS-filtered)
    - Compose: send via /.netlify/functions/send-mail (Bearer access_token)

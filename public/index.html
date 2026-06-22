@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ikemen Mail</title>
+  <title>Standard Mailer</title>
   <link rel="stylesheet" href="styles.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✉️</text></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>S</text></svg>" />
 </head>
 <body>
   <!-- ============ AUTH VIEW ============ -->
   <div id="auth-view" class="auth-view hidden">
     <div class="auth-card">
-      <div class="auth-logo">✉️ Ikemen Mail</div>
+      <div class="auth-logo">Standard Mailer</div>
       <p class="auth-sub" id="auth-sub">アカウントにログイン</p>
 
       <form id="auth-form" autocomplete="on">
@@ -41,18 +41,18 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-top">
-        <div class="app-title">✉️ Ikemen Mail</div>
-        <button class="btn btn-primary btn-compose" id="compose-btn">✏️ 新規作成</button>
+        <div class="app-title">Standard Mailer</div>
+        <button class="btn btn-primary btn-compose" id="compose-btn">新規作成</button>
         <nav class="nav">
           <button class="nav-item" data-folder="inbox">
-            <span class="nav-label">📥 受信箱</span>
+            <span class="nav-label">受信箱</span>
             <span class="badge hidden" id="unread-badge">0</span>
           </button>
           <button class="nav-item" data-folder="sent">
-            <span class="nav-label">📤 送信済</span>
+            <span class="nav-label">送信済</span>
           </button>
           <button class="nav-item" data-folder="drafts">
-            <span class="nav-label">📝 下書き</span>
+            <span class="nav-label">下書き</span>
           </button>
         </nav>
       </div>
@@ -80,7 +80,7 @@
       <header class="pane-header">
         <button class="icon-btn detail-back hidden" id="detail-back" title="戻る">←</button>
         <h2 id="detail-title">メッセージ</h2>
-        <button class="icon-btn danger hidden" id="delete-btn" title="削除">🗑 削除</button>
+        <button class="icon-btn danger hidden" id="delete-btn" title="削除">削除</button>
       </header>
       <div class="detail-body" id="detail-body">
         <div class="empty-state">メッセージを選択してください</div>

@@ -1,4 +1,4 @@
-// Example PUBLIC client configuration for Ikemen Mail.
+// Example PUBLIC client configuration for Standard Mailer.
 // Copy this file to config.js and fill in your project's values.
 //
 // NOTE: anonKey is the PUBLIC Supabase anon key. It is safe to expose in

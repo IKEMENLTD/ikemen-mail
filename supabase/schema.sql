@@ -1,4 +1,4 @@
--- Ikemen Mail — database schema
+-- Standard Mailer — database schema
 --
 -- Overview of access model:
 --   * Netlify Functions (send-mail, inbound) connect with the Supabase
