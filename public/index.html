@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ikemen Mail</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="card">
+    <header class="header">
+      <h1 class="title">Ikemen Mail</h1>
+      <p class="subtitle">シンプルなメール送信ツール</p>
+    </header>
+
+    <section class="compose">
+      <form id="compose-form" novalidate>
+        <div class="field">
+          <label for="to">宛先</label>
+          <input type="email" id="to" name="to" required placeholder="example@example.com" />
+        </div>
+
+        <div class="field">
+          <label for="subject">件名</label>
+          <input type="text" id="subject" name="subject" required placeholder="件名を入力" />
+        </div>
+
+        <div class="field">
+          <label for="body">本文</label>
+          <textarea id="body" name="body" rows="6" required placeholder="本文を入力"></textarea>
+        </div>
+
+        <button type="submit" id="send-btn" class="btn">送信</button>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section class="history">
+      <h2 class="section-title">送信履歴</h2>
+      <ul id="history-list" class="history-list"></ul>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

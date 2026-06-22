@@ -1,0 +1,18 @@
+# Dependencies
+node_modules
+
+# Environment variables (do NOT ignore .env.example)
+.env
+.env.*.local
+
+# Netlify
+.netlify
+
+# Build output
+dist
+
+# Logs
+npm-debug.log*
+
+# OS
+.DS_Store
