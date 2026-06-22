@@ -112,9 +112,11 @@ ikemen-mail/
 
 ### 3. Resend 設定
 
-1. [Resend](https://resend.com/) でアカウントを作成し、API キーを発行します。
-2. 送信元ドメインを登録し、DNS（SPF / DKIM）認証を完了させます。
-3. 認証済みドメインのアドレス（例: `noreply@yourdomain.com`）を送信元として使用します。
+1. [Resend](https://resend.com/) の API キーを用意します（既存プロジェクトのキーを流用可）。
+2. 送信元ドメイン `ikemen.ltd` を Resend に登録し、DNS（SPF / DKIM）認証を完了させます。
+3. 送信元アドレスは **`kouda@ikemen.ltd`**（コード既定値）を使用します。`FROM_EMAIL` で上書き可能です。
+
+> **重要**: Resend は検証済みドメインのアドレスからしか送信できません。流用する Resend アカウントに `ikemen.ltd` が登録・認証されている必要があります。未登録の場合はドメイン認証を行ってください。
 
 ### 4. Netlify 環境変数設定
 
@@ -125,7 +127,7 @@ Netlify ダッシュボードの環境変数に以下を設定します（`.env.
 | `SUPABASE_URL` | Supabase プロジェクトの URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | service_role キー（サーバー専用シークレット、RLS をバイパス） |
 | `RESEND_API_KEY` | Resend の API キー（サーバー専用シークレット） |
-| `FROM_EMAIL` | 認証済みの送信元アドレス |
+| `FROM_EMAIL` | 送信元アドレス（未設定時は既定で `kouda@ikemen.ltd`） |
 | `INBOUND_SECRET` | （任意）`/inbound` Webhook の共有シークレット。空にすると受信機能を無効化 |
 
 `SUPABASE_SERVICE_ROLE_KEY` と `RESEND_API_KEY` はサーバー専用シークレットです。必ず環境変数として設定し、リポジトリにコミットしないでください。

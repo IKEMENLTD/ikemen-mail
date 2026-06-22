@@ -11,6 +11,10 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 // Simple email-shape validation (not RFC-perfect, just a sanity check).
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// "From" address for outgoing mail. Defaults to kouda@ikemen.ltd; can be
+// overridden via the FROM_EMAIL env var. The domain must be verified in Resend.
+const FROM_EMAIL = process.env.FROM_EMAIL || 'kouda@ikemen.ltd';
+
 /**
  * Build a JSON Netlify Function response.
  */
@@ -79,7 +83,7 @@ exports.handler = async (event) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: process.env.FROM_EMAIL,
+          from: FROM_EMAIL,
           to: [toEmail],
           subject,
           text: body,
