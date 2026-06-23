@@ -392,7 +392,7 @@
     subjWrap.appendChild(document.createTextNode(m.subject || "(件名なし)"));
     if (state.folder === "drafts") {
       subjWrap.appendChild(el("span", "msg-tag is-draft", "下書き"));
-    } else if (m.status === "error" || m.error) {
+    } else if (m.status === "failed" || m.error) {
       subjWrap.appendChild(el("span", "msg-tag is-error", "送信失敗"));
     }
     row.appendChild(subjWrap);
@@ -438,7 +438,7 @@
     $("read-date").textContent = fullDate(m.created_at);
 
     var statusRow = $("read-status-row");
-    if (m.status === "error" || m.error) {
+    if (m.status === "failed" || m.error) {
       show(statusRow);
       $("read-status").textContent = "送信失敗" + (m.error ? "：" + m.error : "");
     } else if (m.status && state.folder === "sent") {
@@ -775,8 +775,11 @@
   // ===========================================================
   function enterApp() {
     showApp();
+    // selectFolder("inbox") already loads the inbox; load the other two
+    // folders (for their badge counts) without re-fetching the inbox.
     selectFolder("inbox");
-    refreshAll();
+    loadFolder("sent", { silent: true });
+    loadFolder("drafts", { silent: true });
     startAutoRefresh();
   }
 
