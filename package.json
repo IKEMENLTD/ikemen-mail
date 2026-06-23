@@ -2,7 +2,7 @@
   "name": "standard-mailer",
   "version": "1.0.0",
   "private": true,
-  "description": "Standard Mailer — a simple email client web app with login (inbox/sent/drafts). Netlify Functions + static site, Supabase Auth + DB, Resend.",
+  "description": "Standard Mailer — a simple email client web app behind a single-password gate (inbox/sent/drafts). Netlify Functions + static site, Supabase DB via service_role (browser never touches Supabase), Resend.",
   "engines": {
     "node": ">=18"
   },

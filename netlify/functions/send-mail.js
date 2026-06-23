@@ -1,139 +1,127 @@
-// POST /.netlify/functions/send-mail
-// Authenticates the caller, validates input, sends an email via the Resend
-// HTTP API, and records the attempt (success or failure) in the `messages`
-// table as a row in the sender's "sent" folder.
+// POST /send-mail — send an email via Resend and log it to the 'sent' folder.
+// Body: {to, subject, body, draftId?}
 
-const { getAdminClient, getUserFromToken } = require('./_supabase');
+const { getAdminClient } = require('./_supabase');
+const { requireAuth } = require('./_auth');
 
-// Standard JSON response headers.
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
+const DEFAULT_FROM = 'kouda@ikemen.ltd';
+// Pragmatic email validation — not RFC-exhaustive, but rejects obvious junk.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Simple email-shape validation (not RFC-perfect, just a sanity check).
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// "From" address for outgoing mail. Defaults to kouda@ikemen.ltd; can be
-// overridden via the FROM_EMAIL env var. The domain must be verified in Resend.
-const FROM_EMAIL = process.env.FROM_EMAIL || 'kouda@ikemen.ltd';
-
-/**
- * Build a JSON Netlify Function response.
- */
-function jsonResponse(statusCode, payload) {
-  return {
-    statusCode,
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
-  };
+function json(statusCode, payload) {
+  return { statusCode, headers: JSON_HEADERS, body: JSON.stringify(payload) };
 }
 
-/**
- * Type-guard: a non-empty trimmed string.
- */
-function isNonEmptyString(value) {
-  return typeof value === 'string' && value.trim().length > 0;
+function isNonEmptyString(v) {
+  return typeof v === 'string' && v.trim().length > 0;
 }
 
 exports.handler = async (event) => {
+  if (event.httpMethod !== 'POST') {
+    return json(405, { ok: false, error: 'Method not allowed' });
+  }
+
+  if (!requireAuth(event)) {
+    return json(401, { ok: false, error: 'Unauthorized' });
+  }
+
+  let body;
   try {
-    // Only POST is allowed.
-    if (event.httpMethod !== 'POST') {
-      return jsonResponse(405, { ok: false, error: 'Method Not Allowed' });
-    }
+    body = JSON.parse(event.body || '{}');
+  } catch (err) {
+    return json(400, { ok: false, error: 'Invalid JSON body' });
+  }
 
-    // Authenticate the caller via the Authorization header.
-    const authHeader = event.headers.authorization || event.headers.Authorization;
-    const user = await getUserFromToken(authHeader);
-    if (!user) {
-      return jsonResponse(401, { ok: false, error: 'Unauthorized' });
-    }
+  const { to, subject, body: text, draftId } = body || {};
 
-    // Parse the JSON body defensively.
-    let payload;
+  if (!isNonEmptyString(to) || !isNonEmptyString(subject) || !isNonEmptyString(text)) {
+    return json(400, { ok: false, error: 'to, subject and body are required' });
+  }
+  if (!EMAIL_RE.test(to.trim())) {
+    return json(400, { ok: false, error: 'Invalid recipient email address' });
+  }
+
+  const fromEmail = process.env.FROM_EMAIL || DEFAULT_FROM;
+
+  try {
+    const admin = getAdminClient();
+
+    // Attempt the send via Resend's HTTP API.
+    let sent = false;
+    let errorText = null;
     try {
-      payload = JSON.parse(event.body || '{}');
-    } catch (err) {
-      return jsonResponse(400, { ok: false, error: 'Invalid JSON body' });
-    }
-
-    const { to, subject, body } = payload || {};
-
-    // Validate required fields.
-    if (!isNonEmptyString(to) || !isNonEmptyString(subject) || !isNonEmptyString(body)) {
-      return jsonResponse(400, {
-        ok: false,
-        error: 'Fields "to", "subject" and "body" are required and must be non-empty strings.',
-      });
-    }
-
-    // Validate that `to` looks like an email address.
-    const toEmail = to.trim();
-    if (!EMAIL_REGEX.test(toEmail)) {
-      return jsonResponse(400, { ok: false, error: 'Field "to" must be a valid email address.' });
-    }
-
-    // Attempt to send the email via the Resend HTTP API.
-    let sendOk = false;
-    let detail = null;
-
-    try {
-      const resendResponse = await fetch('https://api.resend.com/emails', {
+      const resp = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: FROM_EMAIL,
-          to: [toEmail],
+          from: fromEmail,
+          to: [to],
           subject,
-          text: body,
+          text,
         }),
       });
 
-      if (resendResponse.ok) {
-        sendOk = true;
+      if (resp.ok) {
+        sent = true;
       } else {
-        // Capture Resend's error detail for logging/storage.
-        const errText = await resendResponse.text();
-        detail = `Resend API error (${resendResponse.status}): ${errText}`;
+        const detail = await resp.text();
+        errorText = `Resend error ${resp.status}: ${detail}`;
+        console.error('send-mail:', errorText);
       }
-    } catch (err) {
-      detail = `Failed to reach Resend API: ${err && err.message}`;
+    } catch (sendErr) {
+      errorText = `Resend request failed: ${sendErr && sendErr.message}`;
+      console.error('send-mail:', errorText);
     }
 
-    // Record the attempt in `messages` regardless of outcome (sent folder).
-    const admin = getAdminClient();
-    const { data: inserted, error: dbError } = await admin
+    // Always log a row recording the attempt.
+    const { data: inserted, error: insertError } = await admin
       .from('messages')
       .insert({
-        user_id: user.id,
         folder: 'sent',
-        from_email: user.email,
-        to_email: toEmail,
+        from_email: fromEmail,
+        to_email: to,
         subject,
-        body,
-        status: sendOk ? 'sent' : 'failed',
-        error: sendOk ? null : detail,
+        body: text,
+        status: sent ? 'sent' : 'failed',
+        error: errorText,
         read: true,
       })
       .select('id')
       .single();
 
-    if (dbError) {
-      // The DB insert failed; log details server-side (never leak to client).
-      console.error('Failed to insert message record into Supabase:', dbError);
+    if (insertError) {
+      console.error('send-mail: failed to log message:', insertError.message);
+      // If the send itself failed, surface that; otherwise this is a 500.
+      if (!sent) {
+        return json(502, { ok: false, error: 'Failed to send email' });
+      }
+      return json(500, { ok: false, error: 'Internal error' });
     }
 
-    // If sending failed, surface a 502 (the failure was still logged above).
-    if (!sendOk) {
-      console.error('Email send failed:', detail);
-      return jsonResponse(502, { ok: false, error: detail || 'Failed to send email.' });
+    if (!sent) {
+      return json(502, { ok: false, error: 'Failed to send email' });
     }
 
-    return jsonResponse(200, { ok: true, id: inserted ? inserted.id : null });
+    // Clean up the draft this send originated from, if any.
+    if (isNonEmptyString(draftId)) {
+      const { error: delError } = await admin
+        .from('messages')
+        .delete()
+        .eq('id', draftId)
+        .eq('folder', 'drafts');
+      if (delError) {
+        // Non-fatal: the mail was sent and logged successfully.
+        console.error('send-mail: failed to delete draft:', delError.message);
+      }
+    }
+
+    return json(200, { ok: true, id: inserted.id });
   } catch (err) {
-    // Unexpected error: log full details server-side, return a generic message.
-    console.error('Unexpected error in send-mail:', err);
-    return jsonResponse(500, { ok: false, error: 'Internal Server Error' });
+    console.error('send-mail: unexpected error:', err && err.message);
+    return json(500, { ok: false, error: 'Internal error' });
   }
 };
