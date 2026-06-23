@@ -1,638 +1,895 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+/* ===========================================================
+   Standard Mailer — frontend application
+   Vanilla JS, no frameworks, no external deps.
+   =========================================================== */
+(function () {
+  "use strict";
 
-/* =========================================================================
-   Standard Mailer — frontend
-   - Supabase Auth (email/password)
-   - Folders: inbox / sent / drafts (client-side via supabase-js, RLS-filtered)
-   - Compose: send via /.netlify/functions/send-mail (Bearer access_token)
-   ========================================================================= */
+  // ---------------------------------------------------------
+  // Constants & config
+  // ---------------------------------------------------------
+  var API_BASE = "/.netlify/functions";
+  var TOKEN_KEY = "sm_token";
+  var AUTO_REFRESH_MS = 60000;   // inbox auto-refresh interval
+  var AUTOSAVE_MS = 1500;        // compose draft autosave debounce
 
-/* ---------- Supabase client init ---------- */
-const cfg = window.SUPABASE_CONFIG || {};
-if (!cfg.url || !cfg.anonKey) {
-  alert("設定エラー: config.js が読み込まれていません。");
-  throw new Error("Missing SUPABASE_CONFIG");
-}
-const supabase = createClient(cfg.url, cfg.anonKey);
+  var FOLDERS = {
+    inbox:  { label: "受信箱", empty: "受信箱にメールはありません" },
+    sent:   { label: "送信済", empty: "送信済みのメールはありません" },
+    drafts: { label: "下書き", empty: "下書きはありません" }
+  };
 
-/* ---------- DOM helpers ---------- */
-const $ = (id) => document.getElementById(id);
+  // ---------------------------------------------------------
+  // Application state
+  // ---------------------------------------------------------
+  var state = {
+    folder: "inbox",
+    cache: { inbox: null, sent: null, drafts: null }, // arrays or null (not loaded)
+    loading: { inbox: false, sent: false, drafts: false },
+    errored: { inbox: false, sent: false, drafts: false },
+    selectedId: null,
+    search: "",
+    compose: {
+      open: false,
+      draftId: null,
+      sending: false,
+      autosaveTimer: null,
+      lastSaved: ""
+    },
+    confirmCallback: null,
+    autoRefreshTimer: null
+  };
 
-const FOLDER_LABELS = { inbox: "受信箱", sent: "送信済", drafts: "下書き" };
-const EMPTY_TEXT = {
-  inbox: "受信箱は空です",
-  sent: "送信済みのメッセージはありません",
-  drafts: "下書きはありません",
-};
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/* ---------- App state ---------- */
-const state = {
-  session: null,
-  user: null,
-  folder: "inbox",
-  messages: [],
-  selectedId: null,
-  unread: 0,
-  loadToken: 0, // guards against out-of-order async list loads
-};
-
-/* ---------- Utilities ---------- */
-function fmtDate(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "";
-  return d.toLocaleString("ja-JP");
-}
-
-function previewText(body) {
-  if (!body) return "";
-  return body.replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-let toastTimer = null;
-function toast(msg, type = "") {
-  const el = $("toast");
-  el.textContent = msg;
-  el.className = "toast show" + (type ? " " + type : "");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    el.className = "toast";
-  }, 3200);
-}
-
-function showAuthMessage(text, type) {
-  const el = $("auth-message");
-  el.textContent = text || "";
-  el.className = "auth-message" + (text ? " show " + type : "");
-}
-
-function showComposeMessage(text, type) {
-  const el = $("compose-message");
-  el.textContent = text || "";
-  el.className = "auth-message" + (text ? " show " + type : "");
-}
-
-/* =========================================================================
-   AUTH
-   ========================================================================= */
-let authMode = "login"; // 'login' | 'signup'
-
-function setAuthMode(mode) {
-  authMode = mode;
-  showAuthMessage("", "");
-  if (mode === "login") {
-    $("auth-sub").textContent = "アカウントにログイン";
-    $("auth-submit").textContent = "ログイン";
-    $("auth-toggle-text").textContent = "アカウントをお持ちでない方は";
-    $("auth-toggle-link").textContent = "新規登録";
-    $("auth-password").setAttribute("autocomplete", "current-password");
-  } else {
-    $("auth-sub").textContent = "新規アカウント登録";
-    $("auth-submit").textContent = "新規登録";
-    $("auth-toggle-text").textContent = "既にアカウントをお持ちの方は";
-    $("auth-toggle-link").textContent = "ログイン";
-    $("auth-password").setAttribute("autocomplete", "new-password");
+  // ---------------------------------------------------------
+  // Tiny DOM helpers
+  // ---------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
   }
-}
+  function show(node) { if (node) node.hidden = false; }
+  function hide(node) { if (node) node.hidden = true; }
 
-$("auth-toggle-link").addEventListener("click", (e) => {
-  e.preventDefault();
-  setAuthMode(authMode === "login" ? "signup" : "login");
-});
+  // ---------------------------------------------------------
+  // Token storage
+  // ---------------------------------------------------------
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
+  }
+  function setToken(t) {
+    try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {}
+  }
+  function clearToken() {
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+  }
 
-$("auth-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const email = $("auth-email").value.trim();
-  const password = $("auth-password").value;
-  if (!email || !password) return;
+  // ---------------------------------------------------------
+  // API helper — adds Bearer header, parses JSON, handles 401
+  // ---------------------------------------------------------
+  function api(path, options) {
+    options = options || {};
+    var headers = { "Content-Type": "application/json" };
+    if (!options.noAuth) {
+      var token = getToken();
+      if (token) headers["Authorization"] = "Bearer " + token;
+    }
+    var init = { method: options.method || "GET", headers: headers };
+    if (options.body !== undefined) init.body = JSON.stringify(options.body);
 
-  const btn = $("auth-submit");
-  btn.disabled = true;
-  showAuthMessage("", "");
-
-  try {
-    if (authMode === "login") {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        showAuthMessage("ログインに失敗しました: " + translateAuthError(error.message), "error");
+    return fetch(API_BASE + path, init).then(function (res) {
+      if (res.status === 401 && !options.noAuth) {
+        handleUnauthorized();
+        var err = new Error("unauthorized");
+        err.isUnauthorized = true;
+        throw err;
       }
-      // success → onAuthStateChange handles the rest
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok || (data && data.ok === false)) {
+          var msg = (data && data.error) || ("エラーが発生しました (" + res.status + ")");
+          var e = new Error(msg);
+          e.data = data;
+          throw e;
+        }
+        return data;
+      });
+    });
+  }
+
+  function handleUnauthorized() {
+    clearToken();
+    stopAutoRefresh();
+    showLogin();
+    showLoginError("セッションの有効期限が切れました。再度ログインしてください。");
+  }
+
+  // ---------------------------------------------------------
+  // Utilities
+  // ---------------------------------------------------------
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function isValidEmail(v) { return EMAIL_RE.test((v || "").trim()); }
+
+  function truncate(s, n) {
+    s = (s || "").replace(/\s+/g, " ").trim();
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  }
+
+  function fullDate(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleString("ja-JP");
+  }
+
+  function relativeDate(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var now = new Date();
+    var diff = now - d;
+    var min = 60000, hour = 3600000, day = 86400000;
+    if (diff >= 0 && diff < min) return "たった今";
+    if (diff >= 0 && diff < hour) return Math.floor(diff / min) + "分前";
+    var sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    }
+    var yesterday = new Date(now.getTime() - day);
+    if (d.toDateString() === yesterday.toDateString()) return "昨日";
+    if (diff >= 0 && diff < 7 * day) return Math.floor(diff / day) + "日前";
+    if (d.getFullYear() === now.getFullYear()) {
+      return d.toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" });
+    }
+    return d.toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
+  }
+
+  // ---------------------------------------------------------
+  // Toasts
+  // ---------------------------------------------------------
+  function toast(message, kind) {
+    var stack = $("toast-stack");
+    var t = el("div", "toast" + (kind === "error" ? " is-error" : ""));
+    t.appendChild(el("span", null, message));
+    stack.appendChild(t);
+    var timeout = setTimeout(dismiss, kind === "error" ? 5000 : 3000);
+    function dismiss() {
+      clearTimeout(timeout);
+      t.classList.add("is-leaving");
+      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 220);
+    }
+    t.addEventListener("click", dismiss);
+  }
+
+  // ---------------------------------------------------------
+  // Confirm dialog
+  // ---------------------------------------------------------
+  function openConfirm(message, onOk) {
+    $("confirm-msg").textContent = message;
+    state.confirmCallback = onOk;
+    show($("confirm-overlay"));
+    $("confirm-ok").focus();
+  }
+  function closeConfirm() {
+    hide($("confirm-overlay"));
+    state.confirmCallback = null;
+  }
+
+  // ===========================================================
+  // LOGIN
+  // ===========================================================
+  function showLogin() {
+    hide($("app-view"));
+    show($("login-view"));
+    var pw = $("login-password");
+    pw.value = "";
+    pw.focus();
+  }
+  function showApp() {
+    hide($("login-view"));
+    show($("app-view"));
+  }
+  function showLoginError(msg) {
+    var box = $("login-error");
+    box.textContent = msg;
+    show(box);
+  }
+  function clearLoginError() { hide($("login-error")); }
+
+  function handleLogin(e) {
+    e.preventDefault();
+    clearLoginError();
+    var pw = $("login-password").value;
+    if (!pw) { showLoginError("パスワードを入力してください"); return; }
+
+    var btn = $("login-submit");
+    btn.disabled = true;
+    btn.textContent = "ログイン中...";
+
+    api("/login", { method: "POST", noAuth: true, body: { password: pw } })
+      .then(function (data) {
+        if (data && data.token) {
+          setToken(data.token);
+          enterApp();
+        } else {
+          showLoginError("ログインに失敗しました");
+        }
+      })
+      .catch(function (err) {
+        var msg = (err && err.data && err.data.error) ? err.data.error : "パスワードが違います";
+        showLoginError(msg);
+      })
+      .then(function () {
+        btn.disabled = false;
+        btn.textContent = "ログイン";
+      });
+  }
+
+  function togglePassword() {
+    var pw = $("login-password");
+    var btn = $("login-toggle");
+    if (pw.type === "password") {
+      pw.type = "text";
+      btn.textContent = "隠す";
+      btn.setAttribute("aria-label", "パスワードを隠す");
     } else {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) {
-        showAuthMessage("登録に失敗しました: " + translateAuthError(error.message), "error");
-      } else if (data.session) {
-        // Auto-confirmed & signed in → onAuthStateChange takes over.
-        showAuthMessage("登録が完了しました。", "success");
-      } else {
-        // Needs email confirmation.
-        showAuthMessage("確認メールを送信しました。メールをご確認ください。", "success");
-        setAuthMode("login");
-      }
+      pw.type = "password";
+      btn.textContent = "表示";
+      btn.setAttribute("aria-label", "パスワードを表示");
     }
-  } catch (err) {
-    showAuthMessage("通信エラーが発生しました。", "error");
-  } finally {
-    btn.disabled = false;
+    pw.focus();
   }
-});
 
-function translateAuthError(msg) {
-  if (!msg) return "不明なエラー";
-  const m = msg.toLowerCase();
-  if (m.includes("invalid login")) return "メールアドレスまたはパスワードが正しくありません";
-  if (m.includes("already registered") || m.includes("already been registered"))
-    return "このメールアドレスは既に登録されています";
-  if (m.includes("password")) return "パスワードは6文字以上にしてください";
-  if (m.includes("email")) return "有効なメールアドレスを入力してください";
-  return msg;
-}
-
-$("logout-btn").addEventListener("click", async () => {
-  await supabase.auth.signOut();
-});
-
-/* =========================================================================
-   VIEW SWITCHING
-   ========================================================================= */
-function showSplash(show) {
-  $("splash").classList.toggle("hidden", !show);
-}
-
-function renderForSession(session) {
-  state.session = session;
-  state.user = session ? session.user : null;
-
-  if (session) {
-    $("auth-view").classList.add("hidden");
-    $("app-view").classList.remove("hidden");
-    $("user-email").textContent = session.user.email || "";
-    $("user-email").title = session.user.email || "";
-    setActiveFolder(state.folder, true);
-  } else {
-    $("app-view").classList.remove("sidebar-open", "detail-open");
-    $("app-view").classList.add("hidden");
-    $("auth-view").classList.remove("hidden");
-    $("auth-email").value = "";
-    $("auth-password").value = "";
-    state.messages = [];
+  function logout() {
+    clearToken();
+    stopAutoRefresh();
+    state.cache = { inbox: null, sent: null, drafts: null };
     state.selectedId = null;
-  }
-}
-
-/* =========================================================================
-   FOLDER NAVIGATION & LIST
-   ========================================================================= */
-document.querySelectorAll(".nav-item").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    setActiveFolder(btn.dataset.folder);
-    closeSidebar();
-  });
-});
-
-$("refresh-btn").addEventListener("click", () => loadFolder(state.folder));
-
-function setActiveFolder(folder, force) {
-  if (!force && folder === state.folder && state.messages.length) {
-    // still refresh, but keep instant feel
-  }
-  state.folder = folder;
-  document.querySelectorAll(".nav-item").forEach((b) => {
-    b.classList.toggle("active", b.dataset.folder === folder);
-  });
-  $("list-title").textContent = FOLDER_LABELS[folder] || "";
-  clearDetail();
-  loadFolder(folder);
-}
-
-async function loadFolder(folder) {
-  const token = ++state.loadToken;
-  const listEl = $("message-list");
-  listEl.innerHTML = "";
-  const loading = document.createElement("div");
-  loading.className = "empty-state";
-  loading.textContent = "読み込み中...";
-  listEl.appendChild(loading);
-
-  const { data, error } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("folder", folder)
-    .order("created_at", { ascending: false });
-
-  if (token !== state.loadToken) return; // a newer load superseded this one
-
-  if (error) {
-    listEl.innerHTML = "";
-    const errEl = document.createElement("div");
-    errEl.className = "empty-state";
-    errEl.textContent = "読み込みに失敗しました";
-    listEl.appendChild(errEl);
-    toast("読み込みに失敗しました", "error");
-    return;
+    showLogin();
   }
 
-  state.messages = data || [];
-  renderList();
-  if (folder === "inbox") updateUnreadFromList();
-}
+  // ===========================================================
+  // FOLDER LOADING
+  // ===========================================================
+  function loadFolder(folder, opts) {
+    opts = opts || {};
+    state.loading[folder] = true;
+    state.errored[folder] = false;
+    if (folder === state.folder && !opts.silent) renderList();
 
-function renderList() {
-  const listEl = $("message-list");
-  listEl.innerHTML = "";
-
-  if (!state.messages.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = EMPTY_TEXT[state.folder] || "メッセージはありません";
-    listEl.appendChild(empty);
-    return;
+    return api("/list-messages?folder=" + encodeURIComponent(folder))
+      .then(function (data) {
+        var msgs = (data && data.messages) || [];
+        msgs.sort(function (a, b) {
+          return new Date(b.created_at) - new Date(a.created_at);
+        });
+        state.cache[folder] = msgs;
+        state.loading[folder] = false;
+        state.errored[folder] = false;
+        updateBadges();
+        if (folder === state.folder) renderList();
+      })
+      .catch(function (err) {
+        state.loading[folder] = false;
+        if (err && err.isUnauthorized) return;
+        state.errored[folder] = true;
+        if (folder === state.folder) renderList();
+        if (!opts.silent) toast("読み込みに失敗しました", "error");
+      });
   }
 
-  const isInbox = state.folder === "inbox";
-  for (const msg of state.messages) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "msg-row";
-    if (isInbox && !msg.read) row.classList.add("unread");
-    if (msg.id === state.selectedId) row.classList.add("selected");
-    row.dataset.id = msg.id;
-
-    const addr = isInbox ? msg.from_email : msg.to_email;
-
-    const top = document.createElement("div");
-    top.className = "msg-row-top";
-    const addrEl = document.createElement("span");
-    addrEl.className = "msg-addr";
-    addrEl.textContent = addr || "(不明)";
-    const dateEl = document.createElement("span");
-    dateEl.className = "msg-date";
-    dateEl.textContent = fmtDate(msg.created_at);
-    top.appendChild(addrEl);
-    top.appendChild(dateEl);
-
-    const subjEl = document.createElement("div");
-    subjEl.className = "msg-subject";
-    subjEl.textContent = msg.subject || "(件名なし)";
-
-    const prevEl = document.createElement("div");
-    prevEl.className = "msg-preview";
-    prevEl.textContent = previewText(msg.body) || "(本文なし)";
-
-    row.appendChild(top);
-    row.appendChild(subjEl);
-    row.appendChild(prevEl);
-
-    row.addEventListener("click", () => onSelectMessage(msg.id));
-    listEl.appendChild(row);
-  }
-}
-
-function updateUnreadFromList() {
-  // Only accurate when the inbox list is currently loaded.
-  state.unread = state.messages.filter((m) => !m.read).length;
-  applyUnreadBadge();
-}
-
-async function refreshUnreadBadge() {
-  // Authoritative count via head query (works regardless of active folder).
-  const { count, error } = await supabase
-    .from("messages")
-    .select("id", { count: "exact", head: true })
-    .eq("folder", "inbox")
-    .eq("read", false);
-  if (!error && typeof count === "number") {
-    state.unread = count;
-    applyUnreadBadge();
-  }
-}
-
-function applyUnreadBadge() {
-  const badge = $("unread-badge");
-  if (state.unread > 0) {
-    badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
-    badge.classList.remove("hidden");
-  } else {
-    badge.classList.add("hidden");
-  }
-}
-
-/* =========================================================================
-   DETAIL / READING PANE
-   ========================================================================= */
-function clearDetail() {
-  state.selectedId = null;
-  $("detail-title").textContent = "メッセージ";
-  $("delete-btn").classList.add("hidden");
-  const body = $("detail-body");
-  body.innerHTML = "";
-  const empty = document.createElement("div");
-  empty.className = "empty-state";
-  empty.textContent = "メッセージを選択してください";
-  body.appendChild(empty);
-  $("app-view").classList.remove("detail-open");
-}
-
-async function onSelectMessage(id) {
-  const msg = state.messages.find((m) => m.id === id);
-  if (!msg) return;
-
-  // Drafts open in the compose editor instead of a reading pane.
-  if (state.folder === "drafts") {
-    openCompose(msg);
-    return;
+  function refreshAll() {
+    loadFolder("inbox", { silent: state.folder !== "inbox" });
+    loadFolder("sent", { silent: state.folder !== "sent" });
+    loadFolder("drafts", { silent: state.folder !== "drafts" });
   }
 
-  state.selectedId = id;
-  renderList(); // update .selected highlight
-  renderDetail(msg);
-  openDetailMobile();
+  function updateBadges() {
+    setBadge("badge-inbox", unreadCount());
+    setBadge("badge-sent", count("sent"));
+    setBadge("badge-drafts", count("drafts"));
+  }
+  function count(folder) {
+    var c = state.cache[folder];
+    return c ? c.length : 0;
+  }
+  function unreadCount() {
+    var c = state.cache.inbox;
+    if (!c) return 0;
+    return c.filter(function (m) { return !m.read; }).length;
+  }
+  function setBadge(id, n) {
+    var b = $(id);
+    if (!b) return;
+    if (n > 0) { b.textContent = n > 99 ? "99+" : String(n); show(b); }
+    else { hide(b); }
+  }
 
-  // Mark unread inbox messages as read.
-  if (state.folder === "inbox" && !msg.read) {
-    const { error } = await supabase.from("messages").update({ read: true }).eq("id", id);
-    if (!error) {
-      msg.read = true;
-      renderList();
-      refreshUnreadBadge();
+  // ===========================================================
+  // MESSAGE LIST RENDERING
+  // ===========================================================
+  function addressFor(m) {
+    return state.folder === "inbox" ? (m.from_email || "(差出人なし)") : (m.to_email || "(宛先なし)");
+  }
+
+  function filteredMessages() {
+    var msgs = state.cache[state.folder] || [];
+    var q = state.search.trim().toLowerCase();
+    if (!q) return msgs;
+    return msgs.filter(function (m) {
+      return [m.from_email, m.to_email, m.subject, m.body]
+        .map(function (x) { return (x || "").toLowerCase(); })
+        .some(function (x) { return x.indexOf(q) !== -1; });
+    });
+  }
+
+  function renderList() {
+    var container = $("message-list");
+    container.textContent = "";
+    var folder = state.folder;
+
+    // Loading state (only when nothing cached yet)
+    if (state.loading[folder] && state.cache[folder] === null) {
+      container.appendChild(buildState(true, "読み込み中...", null, null));
+      return;
     }
-  }
-}
-
-function renderDetail(msg) {
-  $("detail-title").textContent = msg.subject || "(件名なし)";
-  $("delete-btn").classList.remove("hidden");
-
-  const body = $("detail-body");
-  body.innerHTML = "";
-
-  const card = document.createElement("div");
-  card.className = "detail-card";
-
-  const subj = document.createElement("h1");
-  subj.className = "detail-subject";
-  subj.textContent = msg.subject || "(件名なし)";
-  card.appendChild(subj);
-
-  const meta = document.createElement("div");
-  meta.className = "detail-meta";
-  meta.appendChild(metaRow("差出人", msg.from_email || "(不明)"));
-  meta.appendChild(metaRow("宛先", msg.to_email || "(不明)"));
-  meta.appendChild(metaRow("日時", fmtDate(msg.created_at)));
-  if (msg.status) meta.appendChild(metaRow("状態", String(msg.status)));
-  card.appendChild(meta);
-
-  const text = document.createElement("div");
-  text.className = "detail-text";
-  text.textContent = msg.body || "(本文なし)";
-  card.appendChild(text);
-
-  body.appendChild(card);
-}
-
-function metaRow(label, value) {
-  const row = document.createElement("div");
-  const l = document.createElement("span");
-  l.className = "label";
-  l.textContent = label;
-  const v = document.createElement("span");
-  v.className = "val";
-  v.textContent = value;
-  row.appendChild(l);
-  row.appendChild(v);
-  return row;
-}
-
-$("delete-btn").addEventListener("click", async () => {
-  if (!state.selectedId) return;
-  if (!confirm("このメッセージを削除しますか?")) return;
-  const id = state.selectedId;
-  const { error } = await supabase.from("messages").delete().eq("id", id);
-  if (error) {
-    toast("削除に失敗しました", "error");
-    return;
-  }
-  state.messages = state.messages.filter((m) => m.id !== id);
-  clearDetail();
-  renderList();
-  if (state.folder === "inbox") updateUnreadFromList();
-  toast("削除しました", "success");
-});
-
-/* =========================================================================
-   COMPOSE
-   ========================================================================= */
-function openCompose(draft) {
-  showComposeMessage("", "");
-  $("compose-draft-id").value = draft && draft.id ? draft.id : "";
-  $("compose-to").value = draft ? draft.to_email || "" : "";
-  $("compose-subject").value = draft ? draft.subject || "" : "";
-  $("compose-body").value = draft ? draft.body || "" : "";
-  $("compose-title").textContent = draft ? "下書きを編集" : "新規メッセージ";
-  $("compose-overlay").classList.remove("hidden");
-  $("compose-to").focus();
-}
-
-function closeCompose() {
-  $("compose-overlay").classList.add("hidden");
-  $("compose-form").reset();
-  $("compose-draft-id").value = "";
-  showComposeMessage("", "");
-}
-
-$("compose-btn").addEventListener("click", () => {
-  openCompose(null);
-  closeSidebar();
-});
-$("compose-close").addEventListener("click", closeCompose);
-$("compose-overlay").addEventListener("click", (e) => {
-  if (e.target === $("compose-overlay")) closeCompose();
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("compose-overlay").classList.contains("hidden")) closeCompose();
-});
-
-/* Send */
-$("compose-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const to = $("compose-to").value.trim();
-  const subject = $("compose-subject").value.trim();
-  const body = $("compose-body").value;
-  const draftId = $("compose-draft-id").value || null;
-
-  if (!EMAIL_RE.test(to)) {
-    showComposeMessage("有効な宛先メールアドレスを入力してください。", "error");
-    return;
-  }
-  if (!subject) {
-    showComposeMessage("件名を入力してください。", "error");
-    return;
-  }
-  if (!body.trim()) {
-    showComposeMessage("本文を入力してください。", "error");
-    return;
-  }
-
-  const sendBtn = $("send-btn");
-  const draftBtn = $("save-draft-btn");
-  sendBtn.disabled = true;
-  draftBtn.disabled = true;
-  showComposeMessage("送信中...", "success");
-
-  try {
-    // Get a fresh access token.
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess && sess.session ? sess.session.access_token : null;
-    if (!token) {
-      showComposeMessage("セッションが無効です。再ログインしてください。", "error");
+    // Error state
+    if (state.errored[folder] && state.cache[folder] === null) {
+      container.appendChild(buildState(false, "読み込みに失敗しました",
+        "ネットワークまたはサーバーのエラーです。", "再試行"));
       return;
     }
 
-    const res = await fetch("/.netlify/functions/send-mail", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + token,
-      },
-      body: JSON.stringify({ to, subject, body }),
+    var msgs = filteredMessages();
+    if (msgs.length === 0) {
+      var title, sub;
+      if (state.search.trim()) {
+        title = "該当するメールがありません";
+        sub = "検索条件を変更してください。";
+      } else {
+        title = FOLDERS[folder].empty;
+        sub = null;
+      }
+      container.appendChild(buildState(false, title, sub, null));
+      return;
+    }
+
+    msgs.forEach(function (m) {
+      container.appendChild(buildRow(m));
+    });
+  }
+
+  function buildState(loading, title, sub, action) {
+    var box = el("div", "list-state");
+    if (loading) box.appendChild(el("div", "spinner"));
+    box.appendChild(el("p", "state-title", title));
+    if (sub) box.appendChild(el("p", null, sub));
+    if (action) {
+      var btn = el("button", "btn btn-soft", action);
+      btn.type = "button";
+      btn.addEventListener("click", function () { loadFolder(state.folder); });
+      box.appendChild(btn);
+    }
+    return box;
+  }
+
+  function buildRow(m) {
+    var unread = state.folder === "inbox" && !m.read;
+    var row = el("button", "msg-row" + (unread ? " is-unread" : "") +
+      (m.id === state.selectedId ? " is-selected" : ""));
+    row.type = "button";
+    row.setAttribute("role", "listitem");
+    row.dataset.id = m.id;
+
+    var top = el("div", "msg-row-top");
+    if (unread) top.appendChild(el("span", "unread-dot"));
+    top.appendChild(el("span", "msg-from", addressFor(m)));
+    var date = el("span", "msg-date", relativeDate(m.created_at));
+    date.title = fullDate(m.created_at);
+    top.appendChild(date);
+    row.appendChild(top);
+
+    var subjWrap = el("div", "msg-subject");
+    subjWrap.appendChild(document.createTextNode(m.subject || "(件名なし)"));
+    if (state.folder === "drafts") {
+      subjWrap.appendChild(el("span", "msg-tag is-draft", "下書き"));
+    } else if (m.status === "error" || m.error) {
+      subjWrap.appendChild(el("span", "msg-tag is-error", "送信失敗"));
+    }
+    row.appendChild(subjWrap);
+
+    row.appendChild(el("div", "msg-preview", truncate(m.body, 90) || "(本文なし)"));
+
+    row.addEventListener("click", function () { onSelectMessage(m); });
+    return row;
+  }
+
+  // ===========================================================
+  // MESSAGE SELECTION / READING PANE
+  // ===========================================================
+  function onSelectMessage(m) {
+    if (state.folder === "drafts") {
+      // Drafts open in the compose editor.
+      openCompose({
+        draftId: m.id,
+        to: m.to_email || "",
+        subject: m.subject || "",
+        body: m.body || ""
+      });
+      return;
+    }
+
+    state.selectedId = m.id;
+    renderList();
+    renderReading(m);
+    $("app-view").classList.add("reading-open");
+
+    if (state.folder === "inbox" && !m.read) {
+      markRead(m, true, { silent: true });
+    }
+  }
+
+  function renderReading(m) {
+    hide($("reading-empty"));
+    show($("reading-content"));
+
+    $("read-subject").textContent = m.subject || "(件名なし)";
+    $("read-from").textContent = m.from_email || "(差出人なし)";
+    $("read-to").textContent = m.to_email || "(宛先なし)";
+    $("read-date").textContent = fullDate(m.created_at);
+
+    var statusRow = $("read-status-row");
+    if (m.status === "error" || m.error) {
+      show(statusRow);
+      $("read-status").textContent = "送信失敗" + (m.error ? "：" + m.error : "");
+    } else if (m.status && state.folder === "sent") {
+      show(statusRow);
+      $("read-status").textContent = m.status === "sent" ? "送信済み" : m.status;
+    } else {
+      hide(statusRow);
+    }
+
+    // Body — rendered safely via textContent (white-space: pre-wrap in CSS)
+    $("read-body").textContent = m.body || "(本文なし)";
+
+    // Reply/forward always available
+    show($("act-reply"));
+    show($("act-forward"));
+
+    // Read/unread toggle only for inbox
+    var toggle = $("act-readtoggle");
+    if (state.folder === "inbox") {
+      show(toggle);
+      toggle.textContent = m.read ? "未読にする" : "既読にする";
+    } else {
+      hide(toggle);
+    }
+  }
+
+  function closeReading() {
+    state.selectedId = null;
+    hide($("reading-content"));
+    show($("reading-empty"));
+    $("app-view").classList.remove("reading-open");
+    renderList();
+  }
+
+  function selectedMessage() {
+    var msgs = state.cache[state.folder] || [];
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].id === state.selectedId) return msgs[i];
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------
+  // Read / unread
+  // ---------------------------------------------------------
+  function markRead(m, read, opts) {
+    opts = opts || {};
+    m.read = read; // optimistic
+    updateBadges();
+    renderList();
+    var cur = selectedMessage();
+    if (cur && cur.id === m.id) renderReading(cur);
+
+    api("/update-message", { method: "POST", body: { id: m.id, read: read } })
+      .catch(function (err) {
+        if (err && err.isUnauthorized) return;
+        m.read = !read; // revert
+        updateBadges();
+        renderList();
+        if (!opts.silent) toast("状態の更新に失敗しました", "error");
+      });
+  }
+
+  function toggleReadState() {
+    var m = selectedMessage();
+    if (!m) return;
+    markRead(m, !m.read, {});
+  }
+
+  // ---------------------------------------------------------
+  // Delete
+  // ---------------------------------------------------------
+  function deleteSelected() {
+    var m = selectedMessage();
+    if (!m) return;
+    openConfirm("このメールを削除しますか？この操作は取り消せません。", function () {
+      api("/delete-message", { method: "POST", body: { id: m.id } })
+        .then(function () {
+          var arr = state.cache[state.folder];
+          if (arr) {
+            state.cache[state.folder] = arr.filter(function (x) { return x.id !== m.id; });
+          }
+          state.selectedId = null;
+          hide($("reading-content"));
+          show($("reading-empty"));
+          $("app-view").classList.remove("reading-open");
+          updateBadges();
+          renderList();
+          toast("削除しました");
+        })
+        .catch(function (err) {
+          if (err && err.isUnauthorized) return;
+          toast("削除に失敗しました", "error");
+        });
+    });
+  }
+
+  // ---------------------------------------------------------
+  // Reply / forward
+  // ---------------------------------------------------------
+  function quoteBody(m) {
+    var lines = (m.body || "").split("\n");
+    var quoted = lines.map(function (l) { return "> " + l; }).join("\n");
+    var who = m.from_email || "";
+    return "\n\n----- " + who + " からのメッセージ -----\n" + quoted;
+  }
+  function replyToSelected() {
+    var m = selectedMessage();
+    if (!m) return;
+    var subj = m.subject || "";
+    openCompose({
+      draftId: null,
+      to: m.from_email || "",
+      subject: /^re:/i.test(subj) ? subj : "Re: " + subj,
+      body: quoteBody(m)
+    });
+  }
+  function forwardSelected() {
+    var m = selectedMessage();
+    if (!m) return;
+    var subj = m.subject || "";
+    openCompose({
+      draftId: null,
+      to: "",
+      subject: /^fwd:/i.test(subj) ? subj : "Fwd: " + subj,
+      body: quoteBody(m)
+    });
+  }
+
+  // ===========================================================
+  // COMPOSE
+  // ===========================================================
+  function openCompose(opts) {
+    opts = opts || {};
+    state.compose.open = true;
+    state.compose.draftId = opts.draftId || null;
+    state.compose.sending = false;
+    state.compose.lastSaved = composeSignature(opts.to || "", opts.subject || "", opts.body || "");
+
+    $("compose-to").value = opts.to || "";
+    $("compose-subject").value = opts.subject || "";
+    $("compose-body").value = opts.body || "";
+    $("compose-title").textContent = state.compose.draftId ? "下書きの編集" : "新規メッセージ";
+    $("compose-autosave").textContent = "";
+
+    clearComposeErrors();
+    show($("compose-overlay"));
+    setTimeout(function () {
+      ($("compose-to").value ? $("compose-subject") : $("compose-to")).focus();
+    }, 0);
+  }
+
+  function closeCompose() {
+    if (state.compose.autosaveTimer) {
+      clearTimeout(state.compose.autosaveTimer);
+      state.compose.autosaveTimer = null;
+    }
+    state.compose.open = false;
+    hide($("compose-overlay"));
+  }
+
+  function composeSignature(to, subject, body) {
+    return [to, subject, body].join(" ");
+  }
+  function readComposeFields() {
+    return {
+      to: $("compose-to").value.trim(),
+      subject: $("compose-subject").value,
+      body: $("compose-body").value
+    };
+  }
+
+  function clearComposeErrors() {
+    hide($("compose-to-error"));
+    hide($("compose-body-error"));
+  }
+  function setFieldError(id, msg) {
+    var box = $(id);
+    box.textContent = msg;
+    show(box);
+  }
+
+  function validateCompose() {
+    clearComposeErrors();
+    var f = readComposeFields();
+    var ok = true;
+    if (!f.to) { setFieldError("compose-to-error", "宛先を入力してください"); ok = false; }
+    else if (!isValidEmail(f.to)) { setFieldError("compose-to-error", "メールアドレスの形式が正しくありません"); ok = false; }
+    if (!f.body.trim()) { setFieldError("compose-body-error", "本文を入力してください"); ok = false; }
+    return ok;
+  }
+
+  function sendCompose() {
+    if (state.compose.sending) return;
+    if (!validateCompose()) return;
+    var f = readComposeFields();
+
+    state.compose.sending = true;
+    var btn = $("compose-send");
+    btn.disabled = true;
+    btn.textContent = "送信中...";
+    if (state.compose.autosaveTimer) {
+      clearTimeout(state.compose.autosaveTimer);
+      state.compose.autosaveTimer = null;
+    }
+
+    var body = { to: f.to, subject: f.subject, body: f.body };
+    if (state.compose.draftId) body.draftId = state.compose.draftId;
+
+    api("/send-mail", { method: "POST", body: body })
+      .then(function () {
+        var wasDraftId = state.compose.draftId;
+        closeCompose();
+        toast("送信しました");
+        if (wasDraftId) {
+          // remove from drafts cache immediately
+          var d = state.cache.drafts;
+          if (d) state.cache.drafts = d.filter(function (x) { return x.id !== wasDraftId; });
+          updateBadges();
+          if (state.folder === "drafts") renderList();
+          loadFolder("drafts", { silent: true });
+        }
+        loadFolder("sent", { silent: state.folder !== "sent" });
+      })
+      .catch(function (err) {
+        if (err && err.isUnauthorized) return;
+        toast((err && err.message) || "送信に失敗しました", "error");
+        state.compose.sending = false;
+        btn.disabled = false;
+        btn.textContent = "送信";
+      });
+  }
+
+  function saveDraft(opts) {
+    opts = opts || {};
+    var f = readComposeFields();
+    if (!f.to && !f.subject.trim() && !f.body.trim()) {
+      if (!opts.silent) toast("保存する内容がありません", "error");
+      return Promise.resolve();
+    }
+
+    var body = { to: f.to, subject: f.subject, body: f.body };
+    if (state.compose.draftId) body.id = state.compose.draftId;
+
+    if (!opts.silent) $("compose-savedraft").disabled = true;
+
+    return api("/save-draft", { method: "POST", body: body })
+      .then(function (data) {
+        if (data && data.id) state.compose.draftId = data.id;
+        $("compose-title").textContent = "下書きの編集";
+        state.compose.lastSaved = composeSignature(f.to, f.subject, f.body);
+        if (opts.silent) {
+          $("compose-autosave").textContent = "下書きを保存しました " +
+            new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+        } else {
+          toast("下書きを保存しました");
+        }
+        loadFolder("drafts", { silent: true });
+      })
+      .catch(function (err) {
+        if (err && err.isUnauthorized) return;
+        if (!opts.silent) toast("下書きの保存に失敗しました", "error");
+      })
+      .then(function () {
+        var b = $("compose-savedraft");
+        if (b) b.disabled = false;
+      });
+  }
+
+  function scheduleAutosave() {
+    if (!state.compose.open || state.compose.sending) return;
+    if (state.compose.autosaveTimer) clearTimeout(state.compose.autosaveTimer);
+    state.compose.autosaveTimer = setTimeout(function () {
+      state.compose.autosaveTimer = null;
+      if (!state.compose.open || state.compose.sending) return;
+      var f = readComposeFields();
+      var sig = composeSignature(f.to, f.subject, f.body);
+      var hasContent = f.to || f.subject.trim() || f.body.trim();
+      if (hasContent && sig !== state.compose.lastSaved) {
+        saveDraft({ silent: true });
+      }
+    }, AUTOSAVE_MS);
+  }
+
+  // ===========================================================
+  // FOLDER NAV / SIDEBAR
+  // ===========================================================
+  function selectFolder(folder) {
+    if (!FOLDERS[folder]) return;
+    state.folder = folder;
+    state.selectedId = null;
+    state.search = "";
+    $("search-input").value = "";
+
+    // nav active states
+    var items = document.querySelectorAll(".nav-item");
+    for (var i = 0; i < items.length; i++) {
+      items[i].classList.toggle("is-active", items[i].dataset.folder === folder);
+    }
+    $("list-title").textContent = FOLDERS[folder].label;
+
+    // reset reading pane
+    hide($("reading-content"));
+    show($("reading-empty"));
+    $("app-view").classList.remove("reading-open");
+
+    closeSidebar();
+    renderList();
+    if (state.cache[folder] === null) loadFolder(folder);
+  }
+
+  function openSidebar() { $("app-view").classList.add("sidebar-open"); show($("sidebar-backdrop")); }
+  function closeSidebar() { $("app-view").classList.remove("sidebar-open"); hide($("sidebar-backdrop")); }
+
+  // ===========================================================
+  // AUTO REFRESH
+  // ===========================================================
+  function startAutoRefresh() {
+    stopAutoRefresh();
+    state.autoRefreshTimer = setInterval(function () {
+      if (document.hidden) return;
+      loadFolder("inbox", { silent: true });
+    }, AUTO_REFRESH_MS);
+  }
+  function stopAutoRefresh() {
+    if (state.autoRefreshTimer) {
+      clearInterval(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
+  }
+
+  // ===========================================================
+  // APP ENTRY
+  // ===========================================================
+  function enterApp() {
+    showApp();
+    selectFolder("inbox");
+    refreshAll();
+    startAutoRefresh();
+  }
+
+  // ===========================================================
+  // GLOBAL KEYBOARD
+  // ===========================================================
+  function onKeydown(e) {
+    if (e.key === "Escape") {
+      if (!$("confirm-overlay").hidden) { closeConfirm(); return; }
+      if (state.compose.open) { closeCompose(); return; }
+      if ($("app-view").classList.contains("sidebar-open")) { closeSidebar(); return; }
+      if (!$("reading-content").hidden) { closeReading(); return; }
+    }
+    // Ctrl/Cmd + Enter sends from within compose
+    if (state.compose.open && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      sendCompose();
+      return;
+    }
+    // "c" opens compose when app is active and not typing
+    if (e.key === "c" && !state.compose.open && !$("app-view").hidden) {
+      var tag = (e.target && e.target.tagName) || "";
+      if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
+        e.preventDefault();
+        openCompose({});
+      }
+    }
+  }
+
+  // ===========================================================
+  // EVENT WIRING
+  // ===========================================================
+  function wire() {
+    // Login
+    $("login-form").addEventListener("submit", handleLogin);
+    $("login-toggle").addEventListener("click", togglePassword);
+    $("login-password").addEventListener("input", clearLoginError);
+
+    // Sidebar / nav
+    var navItems = document.querySelectorAll(".nav-item");
+    for (var i = 0; i < navItems.length; i++) {
+      (function (item) {
+        item.addEventListener("click", function () { selectFolder(item.dataset.folder); });
+      })(navItems[i]);
+    }
+    $("compose-btn").addEventListener("click", function () { openCompose({}); });
+    $("refresh-btn").addEventListener("click", function () { refreshAll(); toast("更新しました"); });
+    $("logout-btn").addEventListener("click", logout);
+
+    // Mobile sidebar toggles
+    $("menu-btn").addEventListener("click", openSidebar);
+    $("sidebar-close").addEventListener("click", closeSidebar);
+    $("sidebar-backdrop").addEventListener("click", closeSidebar);
+
+    // List
+    $("list-refresh").addEventListener("click", function () { loadFolder(state.folder); });
+    $("search-input").addEventListener("input", function (e) {
+      state.search = e.target.value;
+      renderList();
     });
 
-    let payload = {};
-    try {
-      payload = await res.json();
-    } catch (_) {
-      /* ignore parse errors */
-    }
+    // Reading actions
+    $("reading-back").addEventListener("click", closeReading);
+    $("act-reply").addEventListener("click", replyToSelected);
+    $("act-forward").addEventListener("click", forwardSelected);
+    $("act-readtoggle").addEventListener("click", toggleReadState);
+    $("act-delete").addEventListener("click", deleteSelected);
 
-    if (!res.ok || !payload.ok) {
-      showComposeMessage("送信に失敗しました: " + (payload.error || res.status), "error");
-      return;
-    }
+    // Compose
+    $("compose-close").addEventListener("click", closeCompose);
+    $("compose-send").addEventListener("click", sendCompose);
+    $("compose-savedraft").addEventListener("click", function () { saveDraft({}); });
+    $("compose-overlay").addEventListener("mousedown", function (e) {
+      if (e.target === $("compose-overlay")) closeCompose();
+    });
+    ["compose-to", "compose-subject", "compose-body"].forEach(function (id) {
+      $(id).addEventListener("input", scheduleAutosave);
+    });
 
-    // If we were editing a draft, delete that draft row.
-    if (draftId) {
-      await supabase.from("messages").delete().eq("id", draftId);
-    }
+    // Confirm
+    $("confirm-cancel").addEventListener("click", closeConfirm);
+    $("confirm-ok").addEventListener("click", function () {
+      var cb = state.confirmCallback;
+      closeConfirm();
+      if (cb) cb();
+    });
+    $("confirm-overlay").addEventListener("mousedown", function (e) {
+      if (e.target === $("confirm-overlay")) closeConfirm();
+    });
 
-    closeCompose();
-    toast("メッセージを送信しました", "success");
+    // Global keyboard
+    document.addEventListener("keydown", onKeydown);
 
-    // Refresh sent folder.
-    setActiveFolder("sent", true);
-  } catch (err) {
-    showComposeMessage("通信エラーが発生しました。", "error");
-  } finally {
-    sendBtn.disabled = false;
-    draftBtn.disabled = false;
-  }
-});
-
-/* Save draft */
-$("save-draft-btn").addEventListener("click", async () => {
-  const to = $("compose-to").value.trim();
-  const subject = $("compose-subject").value.trim();
-  const body = $("compose-body").value;
-  const draftId = $("compose-draft-id").value || null;
-
-  if (!to && !subject && !body.trim()) {
-    showComposeMessage("保存する内容がありません。", "error");
-    return;
-  }
-
-  const sendBtn = $("send-btn");
-  const draftBtn = $("save-draft-btn");
-  sendBtn.disabled = true;
-  draftBtn.disabled = true;
-
-  try {
-    const userEmail = state.user ? state.user.email : null;
-    const userId = state.user ? state.user.id : null;
-
-    if (draftId) {
-      // Update existing draft.
-      const { error } = await supabase
-        .from("messages")
-        .update({ to_email: to, subject, body })
-        .eq("id", draftId);
-      if (error) {
-        showComposeMessage("下書きの保存に失敗しました。", "error");
-        return;
+    // Refresh inbox when tab becomes visible again
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && !$("app-view").hidden) {
+        loadFolder("inbox", { silent: true });
       }
-    } else {
-      // Insert new draft. MUST set user_id to logged-in user (RLS).
-      const { error } = await supabase.from("messages").insert({
-        user_id: userId,
-        folder: "drafts",
-        to_email: to,
-        subject,
-        body,
-        status: "draft",
-        from_email: userEmail,
-        read: true,
-      });
-      if (error) {
-        showComposeMessage("下書きの保存に失敗しました。", "error");
-        return;
-      }
-    }
-
-    closeCompose();
-    toast("下書きを保存しました", "success");
-    setActiveFolder("drafts", true);
-  } catch (err) {
-    showComposeMessage("通信エラーが発生しました。", "error");
-  } finally {
-    sendBtn.disabled = false;
-    draftBtn.disabled = false;
+    });
   }
-});
 
-/* =========================================================================
-   MOBILE NAV (sidebar + detail)
-   ========================================================================= */
-function openSidebar() {
-  $("app-view").classList.add("sidebar-open");
-  $("sidebar-backdrop").classList.remove("hidden");
-}
-function closeSidebar() {
-  $("app-view").classList.remove("sidebar-open");
-  $("sidebar-backdrop").classList.add("hidden");
-}
-$("sidebar-toggle").addEventListener("click", openSidebar);
-$("sidebar-backdrop").addEventListener("click", closeSidebar);
-
-function openDetailMobile() {
-  $("app-view").classList.add("detail-open");
-}
-$("detail-back").addEventListener("click", () => {
-  $("app-view").classList.remove("detail-open");
-  state.selectedId = null;
-  renderList();
-});
-
-/* =========================================================================
-   SESSION BOOTSTRAP
-   ========================================================================= */
-setAuthMode("login");
-
-let bootstrapped = false;
-supabase.auth.onAuthStateChange((_event, session) => {
-  renderForSession(session);
-  if (session) refreshUnreadBadge();
-  if (!bootstrapped) {
-    bootstrapped = true;
-    showSplash(false);
+  // ===========================================================
+  // BOOT
+  // ===========================================================
+  function boot() {
+    wire();
+    if (getToken()) enterApp();
+    else showLogin();
   }
-});
 
-// Initial session check (in case onAuthStateChange is slow to fire).
-(async () => {
-  const { data } = await supabase.auth.getSession();
-  if (!bootstrapped) {
-    bootstrapped = true;
-    renderForSession(data.session || null);
-    if (data.session) refreshUnreadBadge();
-    showSplash(false);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
   }
 })();

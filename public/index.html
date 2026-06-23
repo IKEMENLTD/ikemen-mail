@@ -5,126 +5,171 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Standard Mailer</title>
   <link rel="stylesheet" href="styles.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>S</text></svg>" />
 </head>
 <body>
-  <!-- ============ AUTH VIEW ============ -->
-  <div id="auth-view" class="auth-view hidden">
-    <div class="auth-card">
-      <div class="auth-logo">Standard Mailer</div>
-      <p class="auth-sub" id="auth-sub">アカウントにログイン</p>
+  <!-- ===== ログイン画面 ===== -->
+  <section id="login-view" class="login-view" aria-hidden="false">
+    <form id="login-form" class="login-card" novalidate>
+      <h1 class="login-brand">Standard Mailer</h1>
+      <p class="login-sub">メールアカウントにログイン</p>
 
-      <form id="auth-form" autocomplete="on">
-        <label class="field">
-          <span>メールアドレス</span>
-          <input type="email" id="auth-email" required autocomplete="email" placeholder="you@example.com" />
-        </label>
-        <label class="field">
-          <span>パスワード</span>
-          <input type="password" id="auth-password" required autocomplete="current-password" placeholder="••••••••" minlength="6" />
-        </label>
-
-        <div id="auth-message" class="auth-message" role="alert"></div>
-
-        <button type="submit" id="auth-submit" class="btn btn-primary btn-block">ログイン</button>
-      </form>
-
-      <div class="auth-toggle">
-        <span id="auth-toggle-text">アカウントをお持ちでない方は</span>
-        <a href="#" id="auth-toggle-link">新規登録</a>
+      <label class="field-label" for="login-password">パスワード</label>
+      <div class="password-wrap">
+        <input
+          id="login-password"
+          class="text-input"
+          type="password"
+          autocomplete="current-password"
+          placeholder="パスワードを入力"
+          aria-describedby="login-error"
+          required
+        />
+        <button type="button" id="login-toggle" class="pw-toggle" aria-label="パスワードを表示">表示</button>
       </div>
-    </div>
-  </div>
 
-  <!-- ============ APP VIEW ============ -->
-  <div id="app-view" class="app-view hidden">
-    <!-- Sidebar -->
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-top">
-        <div class="app-title">Standard Mailer</div>
-        <button class="btn btn-primary btn-compose" id="compose-btn">新規作成</button>
-        <nav class="nav">
-          <button class="nav-item" data-folder="inbox">
-            <span class="nav-label">受信箱</span>
-            <span class="badge hidden" id="unread-badge">0</span>
-          </button>
-          <button class="nav-item" data-folder="sent">
-            <span class="nav-label">送信済</span>
-          </button>
-          <button class="nav-item" data-folder="drafts">
-            <span class="nav-label">下書き</span>
-          </button>
-        </nav>
+      <p id="login-error" class="inline-error" role="alert" hidden></p>
+
+      <button type="submit" id="login-submit" class="btn btn-primary btn-block">ログイン</button>
+    </form>
+    <p class="login-footnote">Standard Mailer</p>
+  </section>
+
+  <!-- ===== アプリ本体 ===== -->
+  <main id="app-view" class="app-view" hidden>
+    <!-- 左サイドバー -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head">
+        <span class="app-title">Standard Mailer</span>
+        <button type="button" id="sidebar-close" class="icon-btn sidebar-close" aria-label="メニューを閉じる">×</button>
       </div>
-      <div class="sidebar-bottom">
-        <div class="user-email" id="user-email" title=""></div>
-        <button class="btn btn-ghost btn-block" id="logout-btn">ログアウト</button>
+
+      <button type="button" id="compose-btn" class="btn btn-primary btn-compose">
+        <span class="plus-icon" aria-hidden="true"></span>作成
+      </button>
+
+      <nav class="nav" aria-label="フォルダ">
+        <button type="button" class="nav-item is-active" data-folder="inbox">
+          <span class="nav-label">受信箱</span>
+          <span class="badge" id="badge-inbox" hidden>0</span>
+        </button>
+        <button type="button" class="nav-item" data-folder="sent">
+          <span class="nav-label">送信済</span>
+          <span class="badge" id="badge-sent" hidden>0</span>
+        </button>
+        <button type="button" class="nav-item" data-folder="drafts">
+          <span class="nav-label">下書き</span>
+          <span class="badge" id="badge-drafts" hidden>0</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button type="button" id="refresh-btn" class="btn btn-ghost btn-block">更新</button>
+        <button type="button" id="logout-btn" class="btn btn-ghost btn-block">ログアウト</button>
       </div>
     </aside>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
 
-    <!-- Backdrop for mobile sidebar -->
-    <div class="sidebar-backdrop hidden" id="sidebar-backdrop"></div>
-
-    <!-- Message list -->
+    <!-- 中央: メッセージ一覧 -->
     <section class="list-pane" id="list-pane">
-      <header class="pane-header">
-        <button class="icon-btn" id="sidebar-toggle" title="メニュー">☰</button>
-        <h2 id="list-title">受信箱</h2>
-        <button class="icon-btn" id="refresh-btn" title="更新">⟳</button>
+      <header class="list-head">
+        <button type="button" id="menu-btn" class="icon-btn menu-btn" aria-label="メニューを開く"><span class="hamburger" aria-hidden="true"></span></button>
+        <h2 class="list-title" id="list-title">受信箱</h2>
+        <button type="button" id="list-refresh" class="icon-btn refresh-icon-btn" aria-label="更新" title="更新"><span class="refresh-icon" aria-hidden="true"></span></button>
       </header>
-      <div class="message-list" id="message-list"></div>
-    </section>
-
-    <!-- Reading pane -->
-    <section class="detail-pane" id="detail-pane">
-      <header class="pane-header">
-        <button class="icon-btn detail-back hidden" id="detail-back" title="戻る">←</button>
-        <h2 id="detail-title">メッセージ</h2>
-        <button class="icon-btn danger hidden" id="delete-btn" title="削除">削除</button>
-      </header>
-      <div class="detail-body" id="detail-body">
-        <div class="empty-state">メッセージを選択してください</div>
+      <div class="search-wrap">
+        <input
+          id="search-input"
+          class="text-input search-input"
+          type="search"
+          placeholder="検索 (差出人 / 件名 / 本文)"
+          aria-label="メールを検索"
+        />
       </div>
+      <div id="message-list" class="message-list" role="list" aria-label="メッセージ一覧"></div>
     </section>
-  </div>
 
-  <!-- ============ COMPOSE MODAL ============ -->
-  <div id="compose-overlay" class="overlay hidden">
-    <div class="compose-modal">
-      <header class="compose-header">
-        <h3 id="compose-title">新規メッセージ</h3>
-        <button class="icon-btn" id="compose-close" title="閉じる">✕</button>
+    <!-- 右: 閲覧ペイン -->
+    <section class="reading-pane" id="reading-pane">
+      <div id="reading-empty" class="reading-empty">
+        <div class="reading-empty-inner">
+          <div class="empty-mark" aria-hidden="true"></div>
+          <p>メールを選択してください</p>
+        </div>
+      </div>
+
+      <article id="reading-content" class="reading-content" hidden>
+        <div class="reading-toolbar">
+          <button type="button" id="reading-back" class="icon-btn reading-back" aria-label="一覧へ戻る">‹ 戻る</button>
+          <div class="reading-actions">
+            <button type="button" id="act-reply" class="btn btn-soft">返信</button>
+            <button type="button" id="act-forward" class="btn btn-soft">転送</button>
+            <button type="button" id="act-readtoggle" class="btn btn-soft" hidden>既読にする</button>
+            <button type="button" id="act-delete" class="btn btn-danger-soft">削除</button>
+          </div>
+        </div>
+
+        <h1 id="read-subject" class="read-subject"></h1>
+        <div class="read-meta">
+          <div class="read-meta-row"><span class="meta-key">From</span><span id="read-from" class="meta-val"></span></div>
+          <div class="read-meta-row"><span class="meta-key">To</span><span id="read-to" class="meta-val"></span></div>
+          <div class="read-meta-row"><span class="meta-key">日付</span><span id="read-date" class="meta-val"></span></div>
+          <div class="read-meta-row" id="read-status-row" hidden><span class="meta-key">状態</span><span id="read-status" class="meta-val"></span></div>
+        </div>
+        <div id="read-body" class="read-body"></div>
+      </article>
+    </section>
+  </main>
+
+  <!-- ===== 作成モーダル ===== -->
+  <div id="compose-overlay" class="overlay" hidden>
+    <div class="compose-modal" role="dialog" aria-modal="true" aria-labelledby="compose-title">
+      <header class="compose-head">
+        <h2 id="compose-title" class="compose-title">新規メッセージ</h2>
+        <button type="button" id="compose-close" class="icon-btn" aria-label="閉じる">×</button>
       </header>
-      <form id="compose-form" class="compose-form">
-        <input type="hidden" id="compose-draft-id" />
-        <label class="field">
-          <span>宛先</span>
-          <input type="email" id="compose-to" required placeholder="recipient@example.com" />
-        </label>
-        <label class="field">
-          <span>件名</span>
-          <input type="text" id="compose-subject" placeholder="件名" />
-        </label>
-        <label class="field field-grow">
-          <span>本文</span>
-          <textarea id="compose-body" placeholder="本文を入力..."></textarea>
-        </label>
-        <div id="compose-message" class="auth-message"></div>
-        <div class="compose-actions">
-          <button type="button" class="btn btn-secondary" id="save-draft-btn">下書き保存</button>
-          <button type="submit" class="btn btn-primary" id="send-btn">送信</button>
+
+      <form id="compose-form" class="compose-body" novalidate>
+        <div class="compose-field">
+          <label class="field-label" for="compose-to">宛先</label>
+          <input id="compose-to" class="text-input" type="email" autocomplete="off" placeholder="name@example.com" />
+          <p class="inline-error" id="compose-to-error" hidden></p>
+        </div>
+        <div class="compose-field">
+          <label class="field-label" for="compose-subject">件名</label>
+          <input id="compose-subject" class="text-input" type="text" placeholder="件名" />
+        </div>
+        <div class="compose-field compose-field-grow">
+          <label class="field-label" for="compose-body">本文</label>
+          <textarea id="compose-body" class="text-input compose-textarea" placeholder="本文を入力..."></textarea>
+          <p class="inline-error" id="compose-body-error" hidden></p>
         </div>
       </form>
+
+      <footer class="compose-foot">
+        <span id="compose-autosave" class="autosave-hint" aria-live="polite"></span>
+        <div class="compose-foot-actions">
+          <button type="button" id="compose-savedraft" class="btn btn-ghost">下書き保存</button>
+          <button type="button" id="compose-send" class="btn btn-primary">送信</button>
+        </div>
+      </footer>
     </div>
   </div>
 
-  <!-- Toast -->
-  <div id="toast" class="toast hidden"></div>
+  <!-- ===== 確認ダイアログ ===== -->
+  <div id="confirm-overlay" class="overlay" hidden>
+    <div class="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-msg">
+      <h2 id="confirm-title" class="confirm-title">確認</h2>
+      <p id="confirm-msg" class="confirm-msg"></p>
+      <div class="confirm-actions">
+        <button type="button" id="confirm-cancel" class="btn btn-ghost">キャンセル</button>
+        <button type="button" id="confirm-ok" class="btn btn-danger">削除</button>
+      </div>
+    </div>
+  </div>
 
-  <!-- Loading splash -->
-  <div id="splash" class="splash"><div class="spinner"></div></div>
+  <!-- ===== トースト ===== -->
+  <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
-  <script src="config.js"></script>
-  <script type="module" src="app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
